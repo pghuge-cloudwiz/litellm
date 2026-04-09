@@ -54,7 +54,7 @@ from litellm.constants import (
     LITELLM_SETTINGS_SAFE_DB_OVERRIDES,
     LITELLM_UI_ALLOW_HEADERS,
     LITELLM_UI_SESSION_DURATION,
-    DAILY_TAG_SPEND_BATCH_MULTIPLIER
+    DAILY_TAG_SPEND_BATCH_MULTIPLIER,
 )
 from litellm.litellm_core_utils.litellm_logging import (
     _init_custom_logger_compatible_class,
@@ -483,6 +483,7 @@ from litellm.proxy.spend_tracking.spend_management_endpoints import (
 )
 from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 from litellm.proxy.spend_tracking.vantage_endpoints import router as vantage_router
+from litellm.proxy.spend_tracking.mavvrik_endpoints import router as mavvrik_router
 from litellm.proxy.types_utils.utils import get_instance_fn
 from litellm.proxy.ui_crud_endpoints.proxy_setting_endpoints import (
     router as ui_crud_endpoints_router,
@@ -2161,9 +2162,11 @@ def run_ollama_serve():
         with open(os.devnull, "w") as devnull:
             subprocess.Popen(command, stdout=devnull, stderr=devnull)
     except Exception as e:
-        verbose_proxy_logger.debug(f"""
+        verbose_proxy_logger.debug(
+            f"""
             LiteLLM Warning: proxy started with `ollama` model\n`ollama serve` failed with Exception{e}. \nEnsure you run `ollama serve`
-        """)
+        """
+        )
 
 
 def _get_process_rss_mb() -> Optional[float]:
@@ -2316,9 +2319,13 @@ def _write_health_state_to_router_cache(
 
             exception_status = getattr(original_exception, "status_code", 500)
 
-            if llm_router.health_check_ignore_transient_errors and exception_status in (
-                429,
-                408,
+            if (
+                llm_router.health_check_ignore_transient_errors
+                and exception_status
+                in (
+                    429,
+                    408,
+                )
             ):
                 continue
 
@@ -6287,7 +6294,9 @@ class ProxyStartupEvent:
 
         ### UPDATE DAILY TAG SPEND (separate scheduler job with longer interval) ###
         ## Reduces QPS as there are more tags for a single request
-        tag_spend_update_interval = int(batch_writing_interval * DAILY_TAG_SPEND_BATCH_MULTIPLIER)
+        tag_spend_update_interval = int(
+            batch_writing_interval * DAILY_TAG_SPEND_BATCH_MULTIPLIER
+        )
         from litellm.proxy.utils import update_daily_tag_spend
 
         scheduler.add_job(
@@ -6570,6 +6579,15 @@ class ProxyStartupEvent:
                         "Failed to register VantageLogger from DB settings: %s", e
                     )
             await VantageLogger.init_vantage_background_job(scheduler=scheduler)
+
+        ########################################################
+        # Mavvrik Background Job
+        ########################################################
+        from litellm.integrations.mavvrik.mavvrik import MavvrikLogger
+        from litellm.proxy.spend_tracking.mavvrik_endpoints import is_mavvrik_setup
+
+        if await is_mavvrik_setup():
+            await MavvrikLogger.init_mavvrik_background_job(scheduler=scheduler)
 
         ########################################################
         # Prometheus Background Job
@@ -7132,9 +7150,9 @@ async def chat_completion(  # noqa: PLR0915
             hasattr(user_api_key_dict, "organization_alias")
             and user_api_key_dict.organization_alias is not None
         ):
-            data["metadata"]["user_api_key_org_alias"] = (
-                user_api_key_dict.organization_alias
-            )
+            data["metadata"][
+                "user_api_key_org_alias"
+            ] = user_api_key_dict.organization_alias
         if (
             hasattr(user_api_key_dict, "agent_id")
             and user_api_key_dict.agent_id is not None
@@ -7313,9 +7331,9 @@ async def completion(  # noqa: PLR0915
                 hasattr(user_api_key_dict, "organization_alias")
                 and user_api_key_dict.organization_alias is not None
             ):
-                data["metadata"]["user_api_key_org_alias"] = (
-                    user_api_key_dict.organization_alias
-                )
+                data["metadata"][
+                    "user_api_key_org_alias"
+                ] = user_api_key_dict.organization_alias
             if (
                 hasattr(user_api_key_dict, "agent_id")
                 and user_api_key_dict.agent_id is not None
@@ -7562,9 +7580,9 @@ async def embeddings(  # noqa: PLR0915
                 hasattr(user_api_key_dict, "organization_alias")
                 and user_api_key_dict.organization_alias is not None
             ):
-                data["metadata"]["user_api_key_org_alias"] = (
-                    user_api_key_dict.organization_alias
-                )
+                data["metadata"][
+                    "user_api_key_org_alias"
+                ] = user_api_key_dict.organization_alias
             if (
                 hasattr(user_api_key_dict, "agent_id")
                 and user_api_key_dict.agent_id is not None
@@ -13916,6 +13934,7 @@ app.include_router(customer_router)
 app.include_router(spend_management_router)
 app.include_router(cloudzero_router)
 app.include_router(vantage_router)
+app.include_router(mavvrik_router)
 app.include_router(caching_router)
 app.include_router(analytics_router)
 app.include_router(guardrails_router)
